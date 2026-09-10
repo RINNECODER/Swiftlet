@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// TurboFieldfare-style streaming installer: pulls a sharded MLX checkpoint
 /// from Hugging Face (or a local directory) and routes every arriving byte
@@ -62,6 +63,7 @@ public final class StreamingInstaller {
         case badHeader(String)
         case httpError(String, Int)
         case ioError(String)
+        case hashMismatch(String)
         case cancelled
         case notMLXCheckpoint
 
@@ -71,6 +73,7 @@ public final class StreamingInstaller {
             case .badHeader(let f): return "unreadable header in \(f)"
             case .httpError(let f, let c): return "network error \(c) on \(f)"
             case .ioError(let f): return "could not write \(f)"
+            case .hashMismatch(let f): return "integrity check failed for \(f)"
             case .cancelled: return "cancelled"
             case .notMLXCheckpoint:
                 return "no model.layers.0.mlp.switch_mlp.* tensors found -- this is not "
@@ -79,6 +82,11 @@ public final class StreamingInstaller {
             }
         }
     }
+
+    /// SHA-256 manifest published next to a packed container (`hashes.json`),
+    /// the same file `scripts/verify_container.py --write-hashes` produces:
+    /// { "files": { "<relative path>": "<hex sha256>", ... } }.
+    private struct HashesFile: Decodable { let files: [String: String] }
 
     let source: Source
     let outputDir: URL
@@ -141,6 +149,20 @@ public final class StreamingInstaller {
            let manifest = try? JSONDecoder().decode(Qpack.Manifest.self, from: mData),
            manifest.magic == "QPACK" {
             log("packed container repo detected — direct download")
+            // SHA-256 of every file, published next to the container as
+            // hashes.json. Present on our mirrors; if a source lacks it we
+            // fall back to the manifest's byte-size check with a warning.
+            let expectedHashes: [String: String] = {
+                guard let d = try? source.smallFile("hashes.json"),
+                      let h = try? JSONDecoder().decode(HashesFile.self, from: d)
+                else { return [:] }
+                return h.files
+            }()
+            if expectedHashes.isEmpty {
+                log("no hashes.json at source, verifying by size only")
+            } else {
+                log("hashes.json found, verifying \(expectedHashes.count) files by SHA-256")
+            }
             for aux in ["config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json",
                         "merges.txt", "chat_template.jinja", "generation_config.json",
                         "special_tokens_map.json", "added_tokens.json", "packed_experts/layout.json"] {
@@ -151,7 +173,7 @@ public final class StreamingInstaller {
             for (file, size) in manifest.files.sorted(by: { $0.key < $1.key })
             where file != "packed_experts/layout.json" {
                 if shouldCancel?() == true { throw Error.cancelled }
-                try downloadFile(file, expectedSize: size)
+                try downloadFile(file, expectedSize: size, expectedHash: expectedHashes[file])
             }
             // Manifest last: its presence marks the container complete.
             try mData.write(to: outputDir.appendingPathComponent("manifest.json"))
@@ -425,27 +447,45 @@ public final class StreamingInstaller {
         cursor += count
     }
 
-    /// Direct download of one container file with byte-offset resume.
-    private func downloadFile(_ name: String, expectedSize: Int) throws {
+    /// Direct download of one container file with byte-offset resume. When
+    /// `expectedHash` is given, the finished file is checked against it and a
+    /// mismatch deletes the file and throws, so a later run re-fetches it.
+    private func downloadFile(_ name: String, expectedSize: Int, expectedHash: String?) throws {
         let dest = outputDir.appendingPathComponent(name)
         try FileManager.default.createDirectory(
             at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         let existing = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int) ?? 0
         if existing == expectedSize {
-            log("\(name): already complete")
-            return
+            // Right size already on disk. Trust it only if the hash checks out
+            // (or there is nothing to check against); otherwise re-download.
+            if let expectedHash {
+                if (try? sha256Hex(ofFileAt: dest)) == expectedHash {
+                    log("\(name): already complete (verified)")
+                    return
+                }
+                log("\(name): cached copy failed integrity check, re-downloading")
+            } else {
+                log("\(name): already complete")
+                return
+            }
         }
-        let start = existing ?? 0
-        let resumeFrom = start > expectedSize ? 0 : start   // truncated garbage -> restart
+        let start = existing
+        // A truncated-garbage or corrupt file restarts from zero.
+        let resumeFrom = (existing > 0 && existing < expectedSize) ? existing : 0
         let fd = open(dest.path, O_WRONLY | O_CREAT, 0o644)
         guard fd >= 0 else { throw Error.ioError(name) }
         defer { close(fd) }
         if resumeFrom == 0 { ftruncate(fd, 0) }
         var cursor = resumeFrom
+        // Incremental SHA-256 is only valid from byte 0: a resume cannot see the
+        // bytes already on disk, so in that case we re-read the file at the end.
+        var hasher: SHA256? = (expectedHash != nil && resumeFrom == 0) ? SHA256() : nil
+        _ = start
         log("\(name): downloading from byte \(cursor) of \(expectedSize)")
         try streamShard(name, from: cursor) { chunk in
             let wrote = chunk.withUnsafeBytes { pwrite(fd, $0.baseAddress!, chunk.count, off_t(cursor)) }
             guard wrote == chunk.count else { throw Error.ioError(name) }
+            hasher?.update(data: chunk)
             cursor += chunk.count
             self.reportBytes(chunk.count)
             if cursor % (256 * 1024 * 1024) < chunk.count {
@@ -453,6 +493,39 @@ public final class StreamingInstaller {
             }
         }
         guard cursor == expectedSize else { throw Error.ioError("\(name) short at \(cursor)") }
+
+        if let expectedHash {
+            let got: String
+            if let hasher {
+                got = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            } else {
+                got = try sha256Hex(ofFileAt: dest)   // resumed: hash the whole file
+            }
+            if got != expectedHash {
+                try? FileManager.default.removeItem(at: dest)
+                throw Error.hashMismatch(name)
+            }
+            log("\(name): verified")
+        }
+    }
+
+    /// Streaming SHA-256 of a file on disk, returned as lowercase hex.
+    private func sha256Hex(ofFileAt url: URL) throws -> String {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { throw Error.ioError(url.lastPathComponent) }
+        defer { close(fd) }
+        var hasher = SHA256()
+        let bufSize = 4 << 20
+        var buf = [UInt8](repeating: 0, count: bufSize)
+        while true {
+            let n = buf.withUnsafeMutableBytes { read(fd, $0.baseAddress, bufSize) }
+            if n < 0 { throw Error.ioError(url.lastPathComponent) }
+            if n == 0 { break }
+            buf.withUnsafeBytes { raw in
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: raw[0..<n]))
+            }
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: Shard byte streams
