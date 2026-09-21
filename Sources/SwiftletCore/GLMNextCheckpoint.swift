@@ -123,9 +123,46 @@ public final class GLMNextCheckpoint {
         return bytes
     }
 
+    private static func canonical(_ name: String) -> String {
+        if name.hasPrefix("model.language_model.") {
+            return "model." + name.dropFirst("model.language_model.".count)
+        }
+        if name.hasPrefix("language_model.") {
+            return String(name.dropFirst("language_model.".count))
+        }
+        return name
+    }
+
+    private static func aliases(_ name: String) -> [String] {
+        let canonical = Self.canonical(name)
+        var names = [name, canonical, "language_model." + canonical]
+        if canonical.hasPrefix("model.") {
+            names.append("model.language_model." + canonical.dropFirst("model.".count))
+        }
+        return names
+    }
+
     private func resolve(_ name: String) -> String {
-        if tensors[name] != nil { return name }
-        return "language_model." + name
+        Self.aliases(name).first { tensors[$0] != nil } ?? name
+    }
+
+    private func quantSpec(_ module: String) -> Checkpoint.QuantSpec? {
+        for name in Self.aliases(module) {
+            if let spec = quant.overrides[name] { return spec }
+        }
+        // OrcaRouter stores separate experts but records their precision under
+        // MLX's post-sanitize stacked module. An explicit individual override
+        // takes precedence; only the exact expert/projection path is remapped.
+        let parts = Self.canonical(module).split(separator: ".").map(String.init)
+        if parts.count == 7, parts[0] == "model", parts[1] == "layers",
+           Int(parts[2]) != nil, parts[3] == "mlp", parts[4] == "experts",
+           Int(parts[5]) != nil, ["gate_proj", "up_proj", "down_proj"].contains(parts[6]) {
+            let stacked = parts.prefix(4).joined(separator: ".") + ".switch_mlp." + parts[6]
+            for name in Self.aliases(stacked) {
+                if let spec = quant.overrides[name] { return spec }
+            }
+        }
+        return quant.default
     }
     public func contains(_ name: String) -> Bool { tensors[resolve(name)] != nil }
 
@@ -186,10 +223,7 @@ public final class GLMNextCheckpoint {
             let end = try Self.product([rowStart + rows, columns])
             return try floats(weightName, elements: rowStart * columns..<end)
         }
-        // Only strip the known outer prefix; never suffix-match unrelated modules.
-        let canonical = module.hasPrefix("language_model.") ? String(module.dropFirst(15)) : module
-        guard let spec = quant.overrides[module] ?? quant.overrides["language_model." + canonical]
-                ?? quant.overrides[canonical] ?? quant.default,
+        guard let spec = quantSpec(module),
               [2, 3, 4, 5, 6, 8].contains(spec.bits), [32, 64, 128].contains(spec.groupSize),
               columns % spec.groupSize == 0, weight.dtype == "U32" else {
             throw GLMNextConfig.Error.invalid("unsupported or missing affine quantization: \(module)")
@@ -246,7 +280,7 @@ public final class GLMNextCheckpoint {
         var total = 0
         for (name, tensor) in tensors {
             total += tensor.size
-            let canonical = name.hasPrefix("language_model.") ? String(name.dropFirst(15)) : name
+            let canonical = Self.canonical(name)
             let parts = canonical.split(separator: ".")
             if parts.count >= 6, parts[0] == "model", parts[1] == "layers",
                let layer = Int(parts[2]), (0..<config.layerCount).contains(layer),
