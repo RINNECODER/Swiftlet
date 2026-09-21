@@ -11,17 +11,18 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Tuple
+from urllib.request import urlopen
 
 import mlx.core as mx
 
 REVISION = "a74c7de90a344a2c2c7334acb4e48b57a40480e2"
-SOURCE = Path(__file__).resolve().parent.parent.parent / "glm-reference" / "hyper_connection.py"
+SOURCE = f"https://raw.githubusercontent.com/Blaizzy/mlx-vlm/{REVISION}/mlx_vlm/models/deepseek_v4/hyper_connection.py"
 OUT = Path(__file__).resolve().parent.parent / "fixtures" / "glm-hyper-connection"
 OPS = ("_hc_split_sinkhorn_ops", "_hc_ops", "_hc_expand_op")
 
 
 def load_ops():
-    source = SOURCE.read_bytes()
+    source = urlopen(SOURCE, timeout=30).read()
     tree = ast.parse(source)
     functions = []
     for node in tree.body:

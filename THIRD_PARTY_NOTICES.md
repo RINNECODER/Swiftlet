@@ -24,12 +24,15 @@ Swiftlet builds on the work of several open-source projects.
 
 ## Dependencies
 
-The experimental GLM CPU feed-forward implementation and fixture generator
-use **mlx-vlm** as their reference, specifically `glm5_next/language.py` at
+The experimental GLM CPU feed-forward, linear-attention, and hyper-connection
+implementations and fixture generators use **mlx-vlm** as their reference,
+specifically `glm5_next/language.py`, `gated_delta.py`, and
+`deepseek_v4/hyper_connection.py` at
 commit `a74c7de90a344a2c2c7334acb4e48b57a40480e2`:
 https://github.com/Blaizzy/mlx-vlm. Its MIT notice follows:
 
 Copyright © 2025 Prince Canuma
+Copyright (c) 2026 Apple Inc. (hyper-connection source)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

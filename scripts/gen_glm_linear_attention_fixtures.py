@@ -1,21 +1,24 @@
-"""Generate GLM linear-attention oracles from the pinned local mlx-vlm sources.
+"""Generate GLM linear-attention oracles from the pinned mlx-vlm sources.
 
 The numerical expected values come from executing `Glm5NextLinearAttention` and
 `gated_delta_update` (ops path, `use_kernel=False`) extracted from
-../glm-reference. This script does not download weights or modify that tree.
+pinned upstream source. This script downloads source only, never model weights.
 
 Run:
-  ../glm-reference/.venv/bin/python scripts/gen_glm_linear_attention_fixtures.py
+  python scripts/gen_glm_linear_attention_fixtures.py
 """
 import ast
 import hashlib
 import json
 import sys
 from pathlib import Path
+from urllib.request import urlopen
 
 REVISION = "a74c7de90a344a2c2c7334acb4e48b57a40480e2"
 ROOT = Path(__file__).resolve().parents[1]
-REF = ROOT.parent / "glm-reference"
+SOURCE_BASE = f"https://raw.githubusercontent.com/Blaizzy/mlx-vlm/{REVISION}/mlx_vlm/models"
+LANGUAGE_URL = f"{SOURCE_BASE}/glm5_next/language.py"
+GATED_URL = f"{SOURCE_BASE}/gated_delta.py"
 OUT = ROOT / "fixtures" / "glm-linear-attention" / "reference.json"
 
 
@@ -89,8 +92,8 @@ def load_upstream():
     from functools import partial
     from typing import Optional, Tuple
 
-    language = (REF / "language.py").read_text()
-    gated = (REF / "gated_delta.py").read_text()
+    language = urlopen(LANGUAGE_URL, timeout=30).read().decode()
+    gated = urlopen(GATED_URL, timeout=30).read().decode()
     language_tree = ast.parse(language)
     gated_tree = ast.parse(gated)
     function_names = {
@@ -113,7 +116,7 @@ def load_upstream():
         "Tuple": Tuple,
         "partial": partial,
     }
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(REF / "gated_delta.py"), "exec"), gated_ns)
+    exec(compile(ast.Module(body=functions, type_ignores=[]), GATED_URL, "exec"), gated_ns)
 
     def linear(layer, value):
         # Unquantized bias-free nn.Linear. The extracted module builds only those.
@@ -140,7 +143,7 @@ def load_upstream():
         "gated_delta_update": gated_delta_update,
         "TextConfig": object,
     }
-    exec(compile(ast.Module(body=classes, type_ignores=[]), str(REF / "language.py"), "exec"), language_ns)
+    exec(compile(ast.Module(body=classes, type_ignores=[]), LANGUAGE_URL, "exec"), language_ns)
     return {
         "mx": mx,
         "nn": nn,
@@ -365,12 +368,10 @@ def build_case(upstream, spec):
 
 
 def main():
-    if not (REF / "language.py").is_file() or not (REF / "gated_delta.py").is_file():
-        raise SystemExit(f"pinned sources not found at {REF}")
     try:
         import mlx.core as mx
     except ImportError as error:
-        raise SystemExit(f"mlx is required ({error}); use ../glm-reference/.venv/bin/python")
+        raise SystemExit(f"mlx is required ({error}); install mlx==0.32.2")
     if mx.__version__ != "0.32.2":
         raise SystemExit(f"expected MLX 0.32.2, found {mx.__version__}")
     mx.set_default_device(mx.cpu)

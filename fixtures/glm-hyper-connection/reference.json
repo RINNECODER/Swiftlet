@@ -1,7 +1,7 @@
 {
   "format": "glm-hyper-connection-v1",
   "revision": "a74c7de90a344a2c2c7334acb4e48b57a40480e2",
-  "source": "/Users/luisfernandorubiopadilla/Documents/Codex/2026-09-21/read/work/glm-reference/hyper_connection.py",
+  "source": "https://raw.githubusercontent.com/Blaizzy/mlx-vlm/a74c7de90a344a2c2c7334acb4e48b57a40480e2/mlx_vlm/models/deepseek_v4/hyper_connection.py",
   "source_sha256": "863313696dfc23161b68b61eccbb39f65c6336db8c62d21cb31dd6a6a1db8006",
   "mlx": "0.32.2",
   "device": "cpu",
