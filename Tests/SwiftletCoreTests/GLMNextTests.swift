@@ -153,4 +153,18 @@ import Testing
         try handle.close()
         #expect(throws: (any Swift.Error).self) { _ = try GLMNextCheckpoint(directory: directory) }
     }
+
+    @Test func inventoriesScalarAuxiliariesWithoutReadingWeights() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("glm-scalar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONSerialization.data(withJSONObject: root()).write(to: directory.appendingPathComponent("config.json"))
+        var scalar: Float = 1
+        let data = withUnsafeBytes(of: &scalar) { Data($0) }
+        try SafetensorsFile.write(to: directory.appendingPathComponent("model.safetensors"),
+                                 tensors: [(name: "auxiliary_scale", dtype: "F32", shape: [], bytes: data)])
+        let checkpoint = try GLMNextCheckpoint(directory: directory)
+        #expect(checkpoint.audit().otherWeightBytes == 4)
+        #expect(checkpoint.weightBytesRead == 0)
+    }
 }

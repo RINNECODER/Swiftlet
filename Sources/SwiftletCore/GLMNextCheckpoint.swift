@@ -71,7 +71,7 @@ public final class GLMNextCheckpoint {
             for (name, value) in entries where name != "__metadata__" {
                 guard let entry = value as? [String: Any], let dtype = entry["dtype"] as? String,
                       let elementSize = SafetensorsFile.bytesPerElement(dtype),
-                      let shape = entry["shape"] as? [Int], !shape.isEmpty,
+                      let shape = entry["shape"] as? [Int],
                       let offsets = entry["data_offsets"] as? [Int], offsets.count == 2,
                       offsets[0] >= 0, offsets[1] >= offsets[0],
                       UInt64(offsets[1]) <= fileSize - UInt64(start), tensors[name] == nil else {
