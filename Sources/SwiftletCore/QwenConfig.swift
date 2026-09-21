@@ -47,6 +47,7 @@ public struct QwenConfig: Sendable {
 
     public enum Error: Swift.Error {
         case missingField(String)
+        case unsupportedArchitecture(String)
         case invalidField(String)
     }
 
@@ -68,6 +69,9 @@ public struct QwenConfig: Sendable {
         }
 
         modelType = (text["model_type"] as? String) ?? (top["model_type"] as? String) ?? "qwen3_next"
+        if modelType.hasPrefix("glm5_next") {
+            throw Error.unsupportedArchitecture("GLM-Next is experimental: use glm-audit; full GLM generation/repacking is not implemented")
+        }
         let isQwen35Family = modelType.hasPrefix("qwen3_5") || modelType.hasPrefix("qwen3_6") || isNested
         hiddenSize = try int("hidden_size")
         numHiddenLayers = try int("num_hidden_layers")

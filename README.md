@@ -59,6 +59,46 @@ IO bound, so there is clear headroom). One expectation to set honestly: only
 about 3B parameters are active per token, so these models chat and write
 like large models but recall facts like small ones.
 
+## Experimental GLM-5.3-Flash port (this fork)
+
+**GLM chat/generation is not implemented yet.** This fork adds a tested CPU
+reference for GLM's feed-forward blocks and the checkpoint-reading foundation
+for expert streaming. The existing Qwen runtime remains the generation backend.
+
+Implemented:
+
+- Separate `glm5_next` configuration and dense/sparse layer schedules.
+- Header-only checkpoint inventory, plus positional reads of selected experts
+  from split or stacked, sharded MLX safetensors checkpoints.
+- Per-projection affine 2/3/4/5/6/8-bit decoding, including the 5-bit routed
+  down-projections and 6-bit shared experts in OrcaRouter's 4-bit recipe.
+- GLM sigmoid/group routing with correction bias, routing scale, clipped
+  SwiGLU, dense blocks, and the ungated shared expert, checked against MLX.
+
+Inspect a **locally available checkpoint** without loading its weights:
+
+```sh
+swift run swiftlet glm-audit /path/to/glm-mlx-checkpoint
+swift test --filter GLMNextTests
+```
+
+The audit separates routed-expert storage from all other stored tensors and
+reports the F32 linear-attention recurrent-state size. It is **not a peak-RAM
+estimate or a guarantee that the model fits**: sparse-attention caches, working
+buffers, expert caching, runtime conversions, and macOS still need space.
+Other stored tensors include vision/MTP tensors when present. The CPU reference
+decodes one expert projection at a time to F32; it is not a speed benchmark or
+the final Metal execution path.
+
+Still required for text generation: GLM linear attention, sparse MLA/indexer,
+hyper-connections, full decoder/cache integration, a GLM-compatible packed
+container and Metal execution, and full-checkpoint validation. Do not send GLM
+weights through the Qwen repacker. The exact gated OrcaRouter checkpoint has
+not been validated; current fixtures are small synthetic weights generated
+with MLX and pinned upstream GLM routing/activation functions. Regenerate them
+with `python scripts/gen_glm_next_fixtures.py` in an environment containing
+`mlx==0.32.2`; the script downloads reference source, not model weights.
+
 ## Quick start: try it on a Mac
 
 ```bash
