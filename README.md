@@ -93,8 +93,9 @@ the final Metal execution path.
 Still required for text generation: GLM linear attention, sparse MLA/indexer,
 hyper-connections, full decoder/cache integration, a GLM-compatible packed
 container and Metal execution, and full-checkpoint validation. Do not send GLM
-weights through the Qwen repacker. The exact gated OrcaRouter checkpoint has
-not been validated; current fixtures are small synthetic weights generated
+weights through the Qwen repacker. OrcaRouter's real checkpoint config/index
+informed the tensor-name aliases and split-expert quantization mapping, but
+its weight payloads and full inference have not been validated. Current fixtures are small synthetic weights generated
 with MLX and pinned upstream GLM routing/activation functions. Regenerate them
 with `python scripts/gen_glm_next_fixtures.py` in an environment containing
 `mlx==0.32.2`; the script downloads reference source, not model weights.

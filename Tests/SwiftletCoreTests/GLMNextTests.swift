@@ -87,6 +87,72 @@ import Testing
         }
     }
 
+    @Test func orcaRouterStorageNamesAndStackedQuantOverrides() throws {
+        let directory = try copyFixture("split")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Match the real checkpoint's index/config layout, while keeping the
+        // independent MLX numerical oracle and small synthetic weight bytes.
+        func storedName(_ name: String) -> String {
+            name.replacingOccurrences(of: "language_model.model.", with: "model.language_model.")
+        }
+        var cfg = try root("split")
+        let oldQuant = try #require(cfg["quantization"] as? [String: Any])
+        var quant: [String: Any] = [:]
+        for (key, value) in oldQuant {
+            let canonical = key.replacingOccurrences(of: "language_model.model.", with: "model.")
+            let parts = canonical.split(separator: ".").map(String.init)
+            if parts.count == 7, parts[4] == "experts" {
+                quant[parts.prefix(4).joined(separator: ".") + ".switch_mlp." + parts[6]] = value
+            } else if canonical.contains(".gate_up_proj") {
+                quant[canonical.replacingOccurrences(of: ".gate_up_proj", with: ".gate_proj")] = value
+                quant[canonical.replacingOccurrences(of: ".gate_up_proj", with: ".up_proj")] = value
+            } else { quant[canonical] = value }
+        }
+        cfg["quantization"] = quant
+        try JSONSerialization.data(withJSONObject: cfg).write(to: directory.appendingPathComponent("config.json"))
+        var map: [String: String] = [:]
+        for shard in 1...3 {
+            let filename = String(format: "model-%05d-of-00003.safetensors", shard)
+            let url = directory.appendingPathComponent(filename)
+            var entries: [(name: String, dtype: String, shape: [Int], bytes: Data)] = []
+            do {
+                let file = try SafetensorsFile(url: url)
+                for name in file.tensors.keys.sorted() {
+                    let raw = try file.raw(name)
+                    if name.contains(".gate_up_proj.") {
+                        var shape = raw.info.shape
+                        shape[0] /= 2
+                        for (part, projection) in ["gate_proj", "up_proj"].enumerated() {
+                            let renamed = storedName(name.replacingOccurrences(of: ".gate_up_proj.", with: ".\(projection)."))
+                            let half = raw.bytes.count / 2
+                            entries.append((renamed, raw.info.dtype, shape, raw.bytes.subdata(in: part * half..<(part + 1) * half)))
+                            map[renamed] = filename
+                        }
+                    } else {
+                        entries.append((storedName(name), raw.info.dtype, raw.info.shape, raw.bytes))
+                        map[storedName(name)] = filename
+                    }
+                }
+            }
+            try SafetensorsFile.write(to: url, tensors: entries)
+        }
+        try JSONSerialization.data(withJSONObject: ["weight_map": map]).write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+        let checkpoint = try GLMNextCheckpoint(directory: directory)
+        #expect(checkpoint.audit().routedExpertBytes == 77_824)
+        #expect(checkpoint.weightBytesRead == 0)
+        let oracle = try SafetensorsFile(url: Self.fixtures.appendingPathComponent("reference.safetensors"))
+        let input = try oracle.floats("input")
+        for (layer, tensor) in [(0, "dense_output"), (1, "sparse_output")] {
+            let expected = try oracle.floats(tensor)
+            for token in 0..<3 {
+                let range = token * 64..<(token + 1) * 64
+                close(try GLMNextMoE.forward(checkpoint: checkpoint, layer: layer, input: Array(input[range])), Array(expected[range]))
+            }
+        }
+        let direct = try checkpoint.matrix("model.language_model.layers.1.mlp.experts.0.down_proj", rows: 64, columns: 64)
+        close(direct, try checkpoint.expertProjection(layer: 1, expert: 0, projection: "down_proj"), tolerance: 0)
+    }
+
     @Test func groupedRoutingMatchesUpstream() throws {
         let checkpoint = try GLMNextCheckpoint(directory: Self.fixtures.appendingPathComponent("stacked"))
         let oracle = try SafetensorsFile(url: Self.fixtures.appendingPathComponent("reference.safetensors"))
