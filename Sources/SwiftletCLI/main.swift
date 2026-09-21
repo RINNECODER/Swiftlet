@@ -429,6 +429,16 @@ func flagValue(_ args: [String], _ name: String) -> String? {
 
 let args = CommandLine.arguments
 switch args.count >= 2 ? args[1] : "help" {
+case "glm-audit" where args.count == 3:
+    do {
+        let checkpoint = try GLMNextCheckpoint(directory: URL(fileURLWithPath: args[2]))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        print(String(decoding: try encoder.encode(checkpoint.audit()), as: UTF8.self))
+    } catch {
+        print("GLM audit failed: \(error)")
+        exit(1)
+    }
 case "info" where args.count >= 3:
     runInfo(args[2])
 case "verify" where args.count >= 4:
@@ -498,6 +508,7 @@ case "chat" where args.count >= 3:
     }
 default:
     print("usage:")
+    print("  swiftlet glm-audit <checkpoint-dir>   GLM storage/state audit; reads headers only, not an inference command")
     print("  swiftlet info <model>            model budget summary (\(ArchConfig.known.keys.sorted().joined(separator: " | ")))")
     print("  swiftlet verify <model-dir> <fixtures.safetensors>   compare CPU forward vs mlx fixture")
     print("  swiftlet dump-tensor <model-dir> <module-path> <out.safetensors>   dequantized f32 weights of one module")
